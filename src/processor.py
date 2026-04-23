@@ -1,7 +1,7 @@
 import pdfplumber
 import json
 import re
-import google.generativeai as genai
+from openai import OpenAI
 
 
 # =========================
@@ -35,80 +35,59 @@ SYSTEM_PROMPT = """
 # 1. PDF TEXT EXTRACTION
 # =========================
 def extract_text_from_pdf(pdf_file) -> str:
-    """
-    Извлекает текст из PDF (Streamlit UploadedFile или file-like object).
-    Возвращает пустую строку если PDF отсканирован (нет текстового слоя).
-    """
     text = ""
-
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
-
     return text.strip()
 
 
 # =========================
-# 2. JSON SANITIZERF
+# 2. JSON SANITIZER
 # =========================
 def sanitize_json_response(raw: str) -> dict:
-    """
-    Очищает ответ модели от markdown-обёрток и парсит JSON.
-    Устойчив к ```json ... ``` и лишним пробелам.
-    """
-    # Убираем markdown-блоки ```json ... ``` или ``` ... ```
     cleaned = re.sub(r"```(?:json)?", "", raw).strip()
-
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        # Попытка найти JSON-объект внутри текста
         match = re.search(r"\{.*\}", cleaned, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group())
             except json.JSONDecodeError:
                 pass
-
-    return {
-        "error": "Модель вернула некорректный JSON",
-        "raw_output": raw[:500]
-    }
+    return {"error": "Модель вернула некорректный JSON", "raw_output": raw[:500]}
 
 
 # =========================
-# 3. GEMINI ANALYSIS
+# 3. OPENAI ANALYSIS
 # =========================
-def analyze_with_gemini(text: str, api_key: str) -> dict:
-    """
-    Отправляет текст тендера в Gemini API и возвращает структурированный JSON.
-    api_key передаётся явно — нет глобальных зависимостей.
-    """
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
-    # Ограничиваем текст до 30 000 символов (лимит токенов)
+def analyze_with_openai(text: str, api_key: str) -> dict:
+    client = OpenAI(api_key=api_key)
     truncated_text = text[:30000]
 
-    prompt = f"""{SYSTEM_PROMPT}
-
-ТЕКСТ ТЕНДЕРА:
-{truncated_text}
-"""
-
     try:
-        response = model.generate_content(prompt)
-        return sanitize_json_response(response.text)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=1500,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"ТЕКСТ ТЕНДЕРА:\n{truncated_text}"}
+            ]
+        )
+        raw = response.choices[0].message.content
+        return sanitize_json_response(raw)
 
     except Exception as e:
         error_msg = str(e)
-
-        if "ResourceExhausted" in error_msg or "429" in error_msg:
-            return {"error": "Превышен лимит запросов Gemini API. Подождите и попробуйте снова."}
-        elif "API_KEY_INVALID" in error_msg or "401" in error_msg:
+        if "429" in error_msg or "rate_limit" in error_msg.lower():
+            return {"error": "Превышен лимит запросов OpenAI API. Подождите и попробуйте снова."}
+        elif "401" in error_msg or "invalid_api_key" in error_msg.lower():
             return {"error": "Неверный API ключ. Проверьте ключ в настройках."}
+        elif "insufficient_quota" in error_msg.lower():
+            return {"error": "Закончились средства на OpenAI аккаунте. Пополните баланс на platform.openai.com."}
         else:
             return {"error": f"Ошибка API: {error_msg[:200]}"}
 
@@ -117,14 +96,7 @@ def analyze_with_gemini(text: str, api_key: str) -> dict:
 # 4. MAIN PIPELINE
 # =========================
 def process_tender_pdf(pdf_file, api_key: str) -> dict:
-    """
-    Полный пайплайн: PDF → текст → Gemini → JSON анализ.
-    """
     text = extract_text_from_pdf(pdf_file)
-
     if not text:
-        return {
-            "error": "Файл является сканом. Пожалуйста, загрузите текстовый PDF или OCR-версию документа."
-        }
-
-    return analyze_with_gemini(text, api_key)
+        return {"error": "Файл является сканом. Пожалуйста, загрузите текстовый PDF или OCR-версию документа."}
+    return analyze_with_openai(text, api_key)

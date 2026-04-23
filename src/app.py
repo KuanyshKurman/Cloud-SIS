@@ -68,7 +68,7 @@ st.markdown(
 # SIDEBAR
 # =========================
 st.sidebar.title("⚙️ System Config")
-api_key = st.sidebar.text_input("Gemini API Key", type="password", placeholder="AIza...")
+api_key = st.sidebar.text_input("OpenAI API Key", type="password", placeholder="sk-proj-...")
 st.sidebar.markdown("---")
 st.sidebar.info("Almaty Tender Analyzer v1.0\n\nAI-powered construction tender intelligence.")
 st.sidebar.markdown("---")
